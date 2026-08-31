@@ -42,12 +42,7 @@ jobs:
           # chinese-poetry 是 fork 来的第三方数据集（~237MB，非 farfarfun 原创
           # 内容），push 到 Gitee 经常单次超时、重试 3 次仍失败，白白拖慢整个
           # job 且不产出有价值的镜像，直接排除。
-          #
-          # claw-code：GitHub 侧直接返回 "Repository 'farfarfun/claw-code' is
-          # disabled. Please ask the owner to check their account."（403），
-          # 不是权限/网络问题，是仓库本身被 GitHub 封禁了，重试无意义，需要仓库
-          # owner 去 GitHub 那边核实封禁原因，这里先排除避免每次都失败重试。
-          black_list: chinese-poetry,claw-code
+          black_list: chinese-poetry
           # 这个 action 没有 src_token 这个输入（已核对 action.yml/README），
           # 没有任何凭证时列仓库只能走匿名 API，因此天然只能看到公开仓库，
           # 私有仓库不会被同步到 Gitee。

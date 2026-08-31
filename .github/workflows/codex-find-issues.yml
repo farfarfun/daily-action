@@ -1,0 +1,99 @@
+name: Codex 规范审计（找问题）
+
+# 用 Codex CLI（模型 gpt-5.6-luna，走 OPENAI_BASE_URL 指向的自定义/代理端点，
+# 非官方 OpenAI API）对照 farfarfun/todo-list 的 SPEC.md 逐仓库做只读合规审计，
+# 命中就在 farfarfun/todo-list 建 issue（label: codex-audit，沿用该仓库现有审计
+# 角度的惯例）。每天跑一批（见 scripts/codex_audit_cursor.json 的 batch_size），
+# 滚动覆盖全组织，同时靠"仓库已有 open issue 就跳过"避免重复扫描和重复建 issue。
+#
+# 这条流水线本身跑在 daily-action（找问题/改代码的自动化归这个仓库管），但
+# SPEC.md、mapping.json 只存在于 todo-list，所以每次运行先把 todo-list clone
+# 到 todo-list-ref/ 供脚本读取。
+#
+# 只负责"找问题"，不改任何目标仓库的代码——修复由 claude-fix-issues.yml 负责，
+# 目前那个 workflow 还没启用自动触发，需要先观察这个 workflow 跑几轮再打开。
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "手动指定要扫描的仓库名，逗号分隔（留空则用滚动游标自动选批次）"
+        required: false
+        default: ""
+  schedule:
+    # 每天 03:13 UTC，避开整点/半点
+    - cron: "13 3 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      # gh 操作的目标（issue list/create）落在 farfarfun/todo-list，跟 workflow
+      # 所在仓库不是同一个，默认 GITHUB_TOKEN 权限范围到不了，复用已有的
+      # org 级 ACTION_GITHUB_TOKEN
+      GH_TOKEN: ${{ secrets.ACTION_GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: clone todo-list（SPEC.md / mapping.json 来源）
+        uses: actions/checkout@v4
+        with:
+          repository: farfarfun/todo-list
+          token: ${{ secrets.ACTION_GITHUB_TOKEN }}
+          path: todo-list-ref
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: 选本轮批次（自动游标）
+        if: ${{ github.event.inputs.repos == '' }}
+        env:
+          TODO_LIST_DIR: ${{ github.workspace }}/todo-list-ref
+        run: python3 scripts/codex_audit_cursor.py
+
+      - name: 使用手动指定的仓库列表
+        if: ${{ github.event.inputs.repos != '' }}
+        env:
+          REPOS_INPUT: ${{ github.event.inputs.repos }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          repos = [r.strip() for r in os.environ["REPOS_INPUT"].split(",") if r.strip()]
+          json.dump(repos, open("scripts/codex_audit_batch.json", "w"), ensure_ascii=False, indent=2)
+          print(f"本轮批次（手动指定，{len(repos)} 个）：{repos}")
+          EOF
+
+      - name: 跑 Codex 审计
+        run: python3 scripts/run_codex_audit.py
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          TODO_LIST_DIR: ${{ github.workspace }}/todo-list-ref
+          # 克隆目标是组织内任意仓库（含私有），不是 workflow 所在仓库，
+          # 复用已有的 org 级 ACTION_GITHUB_TOKEN
+          ORG_PAT: ${{ secrets.ACTION_GITHUB_TOKEN }}
+
+      - name: 建 issue（自动去重）
+        run: python3 scripts/file_codex_audit_issues.py
+
+      - name: 提交游标状态
+        if: ${{ github.event.inputs.repos == '' }}
+        run: |
+          git config user.name "farfarfun-bot"
+          git config user.email "farfarfun@qq.com"
+          git add scripts/codex_audit_cursor.json
+          git diff --cached --quiet || git commit -m "chore: 推进 codex 审计游标"
+          git push

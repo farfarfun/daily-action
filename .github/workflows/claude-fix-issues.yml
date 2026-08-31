@@ -1,0 +1,135 @@
+name: Claude 自动修复（codex-audit 发现）
+
+# 读一条 codex-find-issues.yml 在 farfarfun/todo-list 建的 issue，clone 目标
+# 仓库，用 Claude Code headless 尝试修复，开 PR（不自动合并，人工 review 后再合）。
+#
+# 这条流水线本身跑在 daily-action，但 issue 在 todo-list、要修的代码在组织内
+# 其它任意仓库，跟 workflow 所在仓库都不是同一个，所以下面的 gh 操作统一用
+# org 级 ACTION_GITHUB_TOKEN，而不是默认 GITHUB_TOKEN。
+#
+# 暂时只保留 workflow_dispatch 手动触发，不接自动的 `issues: types: [labeled]`
+# 触发器——先靠手动跑验证几轮"改得对不对、PR 内容靠不靠谱"，确认没问题后再考虑
+# 打开自动触发（注意：GitHub Actions 的 issues 事件只对 workflow 所在仓库生效，
+# 而 issue 建在 todo-list、workflow 在 daily-action，跨仓库触发需要额外接线，
+# 不是简单取消注释就能用，打开前需要重新设计触发方式）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "要修复的 issue 号（farfarfun/todo-list 里打了 codex-audit 标签的那条）"
+        required: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # 全流程的 gh 操作目标都是 farfarfun/todo-list 或组织内其它仓库，
+      # 跟 workflow 所在的 daily-action 不是同一个仓库，默认 GITHUB_TOKEN
+      # 权限范围到不了，复用已有的 org 级 ACTION_GITHUB_TOKEN
+      GH_TOKEN: ${{ secrets.ACTION_GITHUB_TOKEN }}
+    steps:
+      - name: 取 issue 号
+        id: issue
+        env:
+          DISPATCH_INPUT: ${{ github.event.inputs.issue_number }}
+        run: |
+          NUM="$DISPATCH_INPUT"
+          if [ -z "$NUM" ]; then
+            echo "拿不到 issue 号" >&2
+            exit 1
+          fi
+          echo "number=$NUM" >> "$GITHUB_OUTPUT"
+
+      - name: 读 issue 标题与正文
+        id: fetch
+        run: |
+          gh issue view "${{ steps.issue.outputs.number }}" --repo farfarfun/todo-list \
+            --json title,body,labels -q '.' > issue.json
+          TITLE=$(python3 -c "import json;print(json.load(open('issue.json'))['title'])")
+          LABELS=$(python3 -c "import json;print(','.join(l['name'] for l in json.load(open('issue.json'))['labels']))")
+          if [[ "$LABELS" != *codex-audit* ]]; then
+            echo "issue #${{ steps.issue.outputs.number }} 没有 codex-audit 标签，跳过" >&2
+            exit 1
+          fi
+          REPO_NAME=$(python3 -c "
+          import re
+          title = open('issue.json').read()
+          import json
+          t = json.loads(title)['title']
+          m = re.match(r'^\[codex审计\] ([^:]+):', t)
+          print(m.group(1) if m else '')
+          ")
+          if [ -z "$REPO_NAME" ]; then
+            echo "无法从标题解析目标仓库名: $TITLE" >&2
+            exit 1
+          fi
+          echo "repo_name=$REPO_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: clone 目标仓库
+        env:
+          # 复用已有的 org 级 ACTION_GITHUB_TOKEN，不单独新建 ORG_PAT
+          ORG_PAT: ${{ secrets.ACTION_GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.fetch.outputs.repo_name }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${ORG_PAT}@github.com/farfarfun/${TARGET_REPO}.git" target
+
+      - name: 新建修复分支
+        working-directory: target
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: git checkout -b "codex-audit-fix/${ISSUE_NUMBER}"
+
+      - name: 安装 Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: 用 Claude Code 修复
+        working-directory: target
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_BODY_FILE: ${{ github.workspace }}/issue.json
+        run: |
+          ISSUE_BODY=$(python3 -c "import json;print(json.load(open('$ISSUE_BODY_FILE'))['body'])")
+          PROMPT="以下是一条自动合规审计发现的问题，正文可能包含 LLM 误判：动手前先自行判断证据是否
+          站得住，如果判断是误报，不要改代码，直接结束、不要提交任何改动。只修复明确成立的问题，改动
+          范围保持最小，不要顺手做无关重构。改完后不要自己 commit/push，由后续步骤统一处理。
+
+          $ISSUE_BODY"
+          claude -p "$PROMPT" --permission-mode acceptEdits
+
+      - name: 提交并开 PR
+        id: pr
+        working-directory: target
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          TARGET_REPO: ${{ steps.fetch.outputs.repo_name }}
+        run: |
+          git config user.name "farfarfun-bot"
+          git config user.email "farfarfun@qq.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "没有改动（判断是误报，或 Claude 未能修复），跳过开 PR"
+            exit 0
+          fi
+          git commit -m "fix: 修复 codex 审计发现的问题（来自 farfarfun/todo-list#${ISSUE_NUMBER}）"
+          git push origin "codex-audit-fix/${ISSUE_NUMBER}"
+          PR_URL=$(gh pr create --repo "farfarfun/${TARGET_REPO}" \
+            --title "fix: 修复 codex 审计发现的问题" \
+            --body "自动修复 farfarfun/todo-list#${ISSUE_NUMBER} 里 Codex 发现的问题，合并前请人工核对每一条改动。" \
+            --head "codex-audit-fix/${ISSUE_NUMBER}")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: 回评 issue
+        if: ${{ steps.pr.outputs.pr_url != '' }}
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo farfarfun/todo-list \
+            --body "Claude Code 已尝试修复，PR：${PR_URL}（未自动合并，请人工 review）"
+          gh issue edit "$ISSUE_NUMBER" --repo farfarfun/todo-list --add-label fix-proposed

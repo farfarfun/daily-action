@@ -1,0 +1,41 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "compliant": {
+      "type": "boolean",
+      "description": "仓库整体是否符合 SPEC.md，findings 为空数组时应为 true"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "rule": {
+            "type": "string",
+            "description": "违反的规则，一句话描述"
+          },
+          "spec_section": {
+            "type": "string",
+            "description": "对应 SPEC.md 的章节号/标题，例如 '4.5 类型标记 py.typed'"
+          },
+          "evidence": {
+            "type": "string",
+            "description": "证据：具体文件路径 + 相关内容片段"
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["low", "medium", "high"]
+          },
+          "suggested_fix": {
+            "type": "string",
+            "description": "建议的修复方式"
+          }
+        },
+        "required": ["rule", "spec_section", "evidence", "confidence", "suggested_fix"]
+      }
+    }
+  },
+  "required": ["compliant", "findings"]
+}

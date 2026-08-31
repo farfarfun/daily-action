@@ -16,7 +16,10 @@ concurrency:
 jobs:
   mirror:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 129+ 个仓库全量 force-push 镜像，个别大仓库（如 fork 来的 chinese-poetry、
+    # funinstall）单仓库重试三次就要吃掉 90 分钟，原来的 30 分钟必然跑不完就被
+    # 平台超时杀掉，每次都以 failure/cancelled 结束。放宽到 180 分钟留够余量。
+    timeout-minutes: 180
     steps:
       - name: Mirror farfarfun public repositories to Gitee
         # Pinned to a commit SHA, not @master: this third-party action handles
@@ -31,5 +34,10 @@ jobs:
           dst_token: ${{ secrets.GITEE_TOKEN }}
           account_type: org
           force_update: true
-          # Only public repos are visible without a src_token, so private
-          # repositories are never mirrored to Gitee.
+          # chinese-poetry 是 fork 来的第三方数据集（~237MB，非 farfarfun 原创
+          # 内容），push 到 Gitee 经常单次超时、重试 3 次仍失败，白白拖慢整个
+          # job 且不产出有价值的镜像，直接排除。
+          black_list: chinese-poetry
+          # 这个 action 没有 src_token 这个输入（已核对 action.yml/README），
+          # 没有任何凭证时列仓库只能走匿名 API，因此天然只能看到公开仓库，
+          # 私有仓库不会被同步到 Gitee。

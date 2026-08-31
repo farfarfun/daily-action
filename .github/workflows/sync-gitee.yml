@@ -9,12 +9,21 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sync-gitee
+  cancel-in-progress: false
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Mirror farfarfun public repositories to Gitee
-        uses: Yikun/hub-mirror-action@master
+        # Pinned to a commit SHA, not @master: this third-party action handles
+        # the Gitee SSH private key and token, so a compromised upstream
+        # branch could exfiltrate both credentials on the next run.
+        # SHA corresponds to v1.5 (same version farfarfun/fundeploy pins to).
+        uses: Yikun/hub-mirror-action@ec47170fa9d126a4bee5a1ab9359845bb1395248 # v1.5
         with:
           src: github/farfarfun
           dst: gitee/farfarfun

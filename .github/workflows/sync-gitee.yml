@@ -3,7 +3,7 @@ name: Mirror to Gitee
 on:
   push:
   schedule:
-    - cron: "10 16 * * *" # 00:10 Asia/Shanghai
+    - cron: "17 */2 * * *" # 每 2 小时一次（Asia/Shanghai 各整点+8 后的 17 分）
   workflow_dispatch:
 
 permissions:

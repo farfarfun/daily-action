@@ -27,6 +27,11 @@ jobs:
         # branch could exfiltrate both credentials on the next run.
         # SHA corresponds to v1.5 (same version farfarfun/fundeploy pins to).
         uses: Yikun/hub-mirror-action@ec47170fa9d126a4bee5a1ab9359845bb1395248 # v1.5
+        env:
+          # 这个 action 容器内 Python 的 stdout 默认是全缓冲的（非 tty），日志
+          # 会攒很久才一次性吐出来，看起来像卡住，实际可能只是在正常处理但
+          # 看不到进度。设成无缓冲方便判断是真卡死还是只是没刷新。
+          PYTHONUNBUFFERED: "1"
         with:
           src: github/farfarfun
           dst: gitee/farfarfun
